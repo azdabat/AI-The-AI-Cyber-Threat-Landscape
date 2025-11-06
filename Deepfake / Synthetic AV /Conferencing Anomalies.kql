@@ -1,0 +1,12 @@
+// Deepfake Conference Anomaly Detection
+// Tables: OfficeActivity, CommonSecurityLog
+OfficeActivity
+| where TimeGenerated >= ago(24h)
+| where Operation in~ ("TeamMeetingStarted","VideoConferenceJoined","VideoConferenceInvited")
+| extend client_ip = tostring(ClientIP), ua = tostring(UserAgent)
+| extend audio_flag = iff(AudioQuality has_cs "synthetic" or AudioTranscriptionConfidence < 0.6,1,0) // AudioTranscriptionConfidence must be produced by pipeline
+| extend perfect_latency = iff(VideoLatency_ms < 50 and AudioLatency_ms < 30,1,0)
+| where audio_flag == 1 or perfect_latency == 1
+| extend total_score = audio_flag*2 + perfect_latency
+| where total_score >= 2
+| project TimeGenerated, User, Operation, client_ip, ua, AudioQuality, AudioTranscriptionConfidence, VideoLatency_ms, total_score
