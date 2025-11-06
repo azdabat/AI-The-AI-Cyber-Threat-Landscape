@@ -1,0 +1,19 @@
+// AI Model Poisoning Detection — L3
+// MITRE: Supply Chain Compromise mapping (T1195, T1566 where relevant), Persistence / Defense Evasion where model artifacts executed
+// Tables: DeviceFileEvents, DeviceNetworkEvents, ThreatIntelligenceIndicator, AzureActivity (for cloud training jobs), CommonSecurityLog
+
+let mispLookup = materialize(ThreatIntelligenceIndicator | where TimeGenerated >= ago(180d) | extend Tags=tostring(Tags) | extend misp_score = 1.0); // reuse earlier MISP logic in production
+
+DeviceFileEvents
+| where TimeGenerated >= ago(7d)
+| where FolderPath has_any ("\\models\\","/models/","\\ml\\","/training/","/artifacts/","\\model_registry\\") or FileName has_any (".pt",".pth",".h5",".pkl",".onnx",".tflite")
+| where ActionType in ("FileCreated","FileModified","FileMoved")
+| extend suspicious_change = iff(FileName endswith_cs ".pt" and FileSize > 1000,1,0) // heuristic
+| extend suspect_replace = iff(FileName in ("model_latest.pt","production_model.pth") and InitiatingProcessFileName !in~ ("trusted_updater.exe","pip.exe","conda.exe","python.exe"),1,0)
+| extend is_large_model = FileSize > 200000000 // 200MB
+| where suspicious_change == 1 or suspect_replace == 1 or is_large_model
+| join kind=leftouter (mispLookup | where Tags has_cs "supply-chain:ai-models") on $left.SHA1 == $right.IndicatorName
+| extend misp_model_score = coalesce(misp_score, 0)
+| extend total_score = 1.0 * toreal(suspect_replace) + 0.5 * toreal(is_large_model) + misp_model_score
+| where total_score >= 1.5
+| project TimeGenerated, DeviceName, FileName, FolderPath, SHA1, InitiatingProcessFileName, InitiatingProcessCommandLine, total_score, misp_model_score
