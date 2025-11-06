@@ -1,0 +1,16 @@
+// Behavioral Mimicry Detection
+// Tables: DeviceProcessEvents, DeviceImageLoadEvents, DeviceRegistryEvents, DeviceLogonEvents, ThreatIntelligenceIndicator
+let mispLookup = materialize(ThreatIntelligenceIndicator | where TimeGenerated >= ago(90d) | extend Tags=tostring(Tags) | extend misp_score=1.0);
+
+DeviceProcessEvents
+| where TimeGenerated >= ago(48h)
+| where FileName in~ ("powershell.exe","pwsh.exe","cmd.exe","wmic.exe","rundll32.exe","cscript.exe")
+| extend cmd = ProcessCommandLine
+| extend admin_like = iff(cmd has_any("Get-ADUser","Get-Mailbox","Get-ChildItem","Get-Process","net user","net group","sc query","sc create","schtasks /create"),1,0)
+| extend timing_precision = iff(datediff("millisecond",TimeGenerated,prev(TimeGenerated)) between (0 .. 5000),1,0) // look for millisecond-precise sequences across processes
+| where admin_like == 1 and (timing_precision == 1 or InitiatingProcessFileName !in~ ("explorer.exe","services.exe"))
+| join kind=leftouter (DeviceImageLoadEvents) on $left.InitiatingProcessFileName == $right.ImageFileName
+| extend misp_mimic = coalesce(mispLookup | where IndicatorType == "CommandLine" and IndicatorName == cmd | project misp_score, 0)
+| extend total_score = 1*admin_like + 1*timing_precision + coalesce(misp_mimic,0)
+| where total_score >= 2
+| project TimeGenerated, DeviceName, FileName, ProcessCommandLine, InitiatingProcessFileName, total_score
