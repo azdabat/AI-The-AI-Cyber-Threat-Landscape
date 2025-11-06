@@ -261,3 +261,37 @@ phish_candidates
 | join kind=leftouter (mimicry_candidates) on $left.DeviceName == $right.DeviceName
 | summarize total_score = count() * 2 by DeviceName
 | where total_score > 6
+
+// === AI Model Poisoning Detection // === 
+DeviceFileEvents
+| where FolderPath has_any ("\\models\\","/training/")
+| where FileName endswith ".pt" or FileName endswith ".pkl" or FileName endswith ".onnx"
+| where ActionType == "FileModified"
+| join kind=inner (ThreatIntelligenceIndicator | where Tags has "supply-chain:ai-models") on $left.SHA1 == $right.IndicatorName
+| project TimeGenerated, DeviceName, FileName, FolderPath, SHA1
+
+// ===  Training Data Exfiltration Detection // ===
+DeviceFileEvents
+| where FileSize > 1000000000
+| where FileName contains "dataset" or FileName contains "training"
+| join kind=inner (DeviceNetworkEvents | where RemotePort in (443,22)) on DeviceName
+| where RemoteUrl has_any ("s3.amazonaws.com","storage.googleapis.com","blob.core.windows.net")
+| project TimeGenerated, DeviceName, FileName, RemoteUrl
+
+// === Deepfake Video Conference Anomaly Detection // ===
+OfficeActivity
+| where Operation in~ ("TeamMeetingStarted","VideoConferenceJoined")
+| where AudioQuality has "synthetic" or VideoLatency < 50
+| project TimeGenerated, User, ClientIP, AudioQuality, VideoLatency
+
+AI has blurred the line between offense and defense.
+The next intrusion you face will be machine-generated, context-aware, and designed to adapt.
+
+The only countermeasure is adaptability — automated intelligence guided by human oversight.
+Use this guide to anticipate, correlate, and outthink the AI adversary.
+
+Author: Senior Threat Intelligence Engineer / L3 Threat Hunter - Ala Dabat
+Version: 2025 Global AI Threat Response Guide
+
+
+
