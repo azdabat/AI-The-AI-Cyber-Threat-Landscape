@@ -1,0 +1,20 @@
+// Data Exfiltration — Large Training Datasets
+// Tables: DeviceFileEvents, DeviceNetworkEvents, CommonSecurityLog, AzureActivity
+let mispLookup = materialize(ThreatIntelligenceIndicator | where TimeGenerated >= ago(90d) | extend Tags=tostring(Tags) | extend misp_score=1.0);
+
+DeviceFileEvents
+| where TimeGenerated >= ago(24h)
+| where ActionType in ("FileCreated","FileCopied","FileMoved")
+| where FileSize > 1000000000 or FileName contains_cs "dataset" or FileName contains_cs "training" or FolderPath has_any ("/datasets/","\\datasets\\","/training/","\\training\\")
+| join kind=inner (
+    DeviceNetworkEvents
+    | where TimeGenerated between (ago(24h) .. now())
+    | where RemotePort in (443,22,21) or RemoteUrl has_any ("s3.amazonaws.com","storage.googleapis.com","blob.core.windows.net","upload.cloud","transfer.azure.com")
+    | project DeviceName, RemoteIP, RemoteUrl, BytesSent, TimeGenerated, RemotePort
+) on DeviceName
+| extend exfil_indicator = iif(RemoteUrl has_any ("s3.amazonaws.com","storage.googleapis.com","blob.core.windows.net"), 2, 1)
+| extend transfer_volume = BytesSent
+| extend exfil_score = case(transfer_volume >= 5000000000,5, transfer_volume >= 1000000000,3,1)
+| extend total_score = exfil_indicator + exfil_score
+| where total_score >= 4
+| project TimeGenerated, DeviceName, FileName, FileSize, FolderPath, RemoteUrl, RemoteIP, BytesSent, total_score
