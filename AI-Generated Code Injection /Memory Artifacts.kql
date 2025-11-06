@@ -1,0 +1,12 @@
+// AI-Generated Code / Memory Injection Detection
+// Tables: DeviceMemoryEvents, DeviceProcessEvents
+DeviceMemoryEvents
+| where TimeGenerated >= ago(24h)
+| where MemoryRegionProtection has "rwx" or MemoryRegionProtection has "rx"
+| extend mem = MemoryContent
+| extend nop_sled = iff(mem matches regex @"\x90{8,}", 2, 0)
+| extend watermark_indicators = iff(mem contains_cs "GPT-Generated" or mem contains_cs "AI-Model" or mem contains_cs "<ai-gen>", 2, 0)
+| extend suspicious_mem = nop_sled + watermark_indicators
+| where suspicious_mem >= 2
+| join kind=leftouter (DeviceProcessEvents) on ProcessId
+| project TimeGenerated, ProcessName, ProcessId, ImageFileName, ParentProcessFileName, suspicious_mem, MemoryRegionProtection
