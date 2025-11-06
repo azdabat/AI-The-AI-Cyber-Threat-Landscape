@@ -1,0 +1,100 @@
+// AI Multi-Stage Attack Chain Detection — L3
+// MITRE ATT&CK: Recon (TA0043?), Initial Access (TA0001), Execution (TA0002), Persistence (TA0003), Command and Control (TA0011), Defense Evasion (TA0005), Discovery (TA0007)
+// Primary techniques mapping (examples): T1566.001 (spearphishing-link), T1566.002 (spearphishing-attachment), T1204 (user execution), T1059 (cmd/ps), T1105 (exfiltration), T1547 (registry run keys), T1574 (DLL side-loading), T1055 (process injection), T1016 (network discovery)
+// Expected tables: EmailEvents, UrlClickEvents, DeviceFileEvents, DeviceProcessEvents, DeviceNetworkEvents, DeviceRegistryEvents, ThreatIntelligenceIndicator
+
+let mispLookup = materialize(
+    ThreatIntelligenceIndicator
+    | where TimeGenerated >= ago(90d)
+    | extend Tags = tostring(Tags)
+    | extend misp_conf = case(Tags has_cs "confidence:90",5, Tags has_cs "confidence:80",4, Tags has_cs "confidence:70",3,1)
+    | extend misp_score = round((case(Tags has_cs "tlp:red",4, Tags has_cs "tlp:amber",3, 1) * 0.2) + (misp_conf * 0.6) + (case(Tags has_cs "threat-level:high",3, Tags has_cs "threat-level:medium",2,1) * 0.2),2)
+    | project IndicatorType, IndicatorName, Tags, misp_score
+);
+
+// ================= STAGE A: AI-ENHANCED PHISHING
+let phish_candidates = materialize (
+    EmailEvents
+    | where TimeGenerated >= ago(48h)
+    | where EmailDirection == "Inbound"
+    // Detect suspicious subjects commonly used by AI-generated spearphish
+    | extend subj_features = strcat(Subject, " ", Body)
+    | extend ai_language_signs = iff(
+            // heuristics: over-polished multi-sentence subject/body templates, greeting mismatch, overly personalised tokens
+            (Subject has_any ("quick question","following up on our","as discussed","action required") or Body contains "please confirm" or Body contains "do you have a moment"), 1, 0)
+    | extend sender = SenderFromAddress
+    | where ai_language_signs == 1
+    // join on MISP email indicators (if present)
+    | join kind=leftouter (mispLookup | where IndicatorType == "Email") on $left.sender == $right.IndicatorName
+    | extend misp_phish_score = coalesce(misp_score, 0)
+    | project TimeGenerated, sender, RecipientEmailAddress, Subject, BodySnippet = substring(Body,0,512), misp_phish_score
+);
+
+// ================= STAGE B: POLYMORPHIC PAYLOAD DELIVERY
+let payload_candidates = materialize (
+    DeviceFileEvents
+    | where TimeGenerated >= ago(48h)
+    | where ActionType in ("FileCreated","FileWritten","FileModified")
+    // suspicious extensions and high-entropy filenames
+    | extend suspicious_ext = iff(FileName endswith_cs ".js" or FileName endswith_cs ".jse" or FileName endswith_cs ".docx" or FileName endswith_cs ".pdf" or FileName endswith_cs ".xlsm" or FileName endswith_cs ".dll", 1, 0)
+    | extend filename_entropy = strlen(FileName) >= 16 and FileName matches regex @"[A-Za-z0-9]{12,}"
+    | extend size_flag = iff(FileSize > 500000 and FileSize < 5000000,1,0) // suspicious mid-range payload sizes typical of packed payloads
+    | where suspicious_ext == 1 or filename_entropy
+    | extend file_hash = SHA1, device = DeviceName, path = FolderPath, initiator = InitiatingProcessFileName, cmdline = InitiatingProcessCommandLine
+    // join with misp file hashes if available
+    | join kind=leftouter (mispLookup | where IndicatorType == "FileHash") on $left.file_hash == $right.IndicatorName
+    | extend misp_file_score = coalesce(misp_score, 0)
+    | project TimeGenerated, device, FileName, path, file_hash, initiator, cmdline, misp_file_score
+);
+
+// ================= STAGE C: ADAPTIVE C2 (ML-DOMAIN / ROTATING IPS)
+let c2_candidates = materialize (
+    DeviceNetworkEvents
+    | where TimeGenerated >= ago(48h)
+    | where RemotePort between (8000 .. 65535) or RemotePort in (80,443)
+    | extend domain = tolower(tostring(split(RemoteUrl, "/")[0]))
+    | extend is_dynamic_provider = iff(RemoteUrl has_cs ".ddns." or RemoteUrl has_cs ".duckdns." or RemoteUrl has_cs ".no-ip.", 1, 0)
+    | extend alg_domain_pattern = iff(domain matches regex @"^[a-z]{10,20}\d{0,4}\.(com|net|org)$", 1, 0)
+    | where is_dynamic_provider == 1 or alg_domain_pattern == 1 or RemoteIP in (/* optional high-risk IP list placeholder */)
+    | join kind=leftouter (mispLookup | where IndicatorType == "Url" or IndicatorType == "Domain") on $left.RemoteUrl == $right.IndicatorName or $left.domain == $right.IndicatorName
+    | extend misp_c2_score = coalesce(misp_score, 0)
+    | project TimeGenerated, DeviceName, RemoteIP, RemoteUrl, RemotePort, domain, alg_domain_pattern, is_dynamic_provider, misp_c2_score
+);
+
+// ================= STAGE D: BEHAVIORAL MIMICRY (ADMIN-LIKE COMMANDS / TIMING)
+let mimicry_candidates = materialize (
+    DeviceProcessEvents
+    | where TimeGenerated >= ago(48h)
+    | where FileName in~ ("powershell.exe","pwsh.exe","cmd.exe","cscript.exe","wscript.exe","mshta.exe","rundll32.exe")
+    // look for admin-like sequences or perfectly timed actions
+    | extend cmd = ProcessCommandLine
+    | extend mimic_signs = 
+        (iff(cmd has "Get-ADUser" or cmd has "Get-ADComputer" or cmd has "Get-ADGroup",1,0)
+         + iff(cmd has "net user" or cmd has "net localgroup",1,0)
+         + iff(cmd has "schtasks /create" or cmd has "sc create",1,0)
+         + iff(cmd has "Invoke-Expression" or cmd has "IEX",1,0))
+    | where mimic_signs >= 2
+    | join kind=leftouter (mispLookup | where IndicatorType == "CommandLine") on $left.ProcessCommandLine == $right.IndicatorName
+    | extend misp_mimic_score = coalesce(misp_score, 0)
+    | project TimeGenerated, DeviceName, InitiatingProcessFileName = FileName, ProcessCommandLine, ParentProcessFileName, misp_mimic_score
+);
+
+// ================= AGGREGATE & SCORE ACROSS STAGES
+// Join candidate sets into an incident-like aggregated row per device / sender / time window.
+// Scoring logic: sum of top misp_scores + heuristics (entropy, alg_domain pattern, mimic_signs) -> total_score
+phish_candidates
+| join kind=leftouter (payload_candidates) on $left.RecipientEmailAddress == $right.device // heuristic: map recipient -> device owner (adjust mapping to your env)
+| join kind=leftouter (c2_candidates) on $left.device == $right.DeviceName
+| join kind=leftouter (mimicry_candidates) on $left.device == $right.DeviceName
+| extend sum_misp = coalesce(misp_phish_score,0) + coalesce(misp_file_score,0) + coalesce(misp_c2_score,0) + coalesce(misp_mimic_score,0)
+| extend heuristics = toint(iif(filename_entropy==true,2,0) + iif(alg_domain_pattern==1,2,0) + toint(mimic_signs))
+| extend total_score = round(sum_misp + heuristics, 2)
+// thresholds: >=8 -> high severity; 5-8 medium; <5 low
+| where total_score >= 5
+| summarize 
+    first_seen = min(TimeGenerated), last_seen = max(TimeGenerated),
+    total_score = max(total_score), stages = make_set(pack("phish",sender,"file",FileName,"c2",domain,"mimic",ProcessCommandLine)),
+    affected_devices = make_set(device), ioc_hashes = make_set(file_hash), ioc_domains = make_set(domain)
+    by bin(TimeGenerated, 1h)
+| extend attack_chain = "AI-Spearphish → Polymorphic Payload → Adaptive C2 → Behavioral Mimicry"
+| project first_seen, last_seen, total_score, stages, affected_devices, ioc_hashes, ioc_domains, attack_chain
