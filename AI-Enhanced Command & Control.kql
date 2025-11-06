@@ -1,0 +1,17 @@
+// AI C2 Detection — Domain Generation / Fast Rotation
+// Tables: DeviceNetworkEvents, DNSLogs (if available), ThreatIntelligenceIndicator
+let mispLookup = materialize(ThreatIntelligenceIndicator | where TimeGenerated >= ago(180d) | extend Tags=tostring(Tags) | extend misp_score=1.0);
+
+DeviceNetworkEvents
+| where TimeGenerated >= ago(7d)
+| extend domain = tolower(tostring(parse_url(RemoteUrl).Host))
+| where isnotempty(domain) or RemoteIP != ""
+| extend dg_pattern = domain matches regex @"^[a-z]{8,20}\d{0,4}\.(com|net|org|io|xyz)$" // algorithmic-looking domain
+| extend recent_domain_count = countif(domain != "" ) over (partition by RemoteIP)
+| where dg_pattern == 1 or RemoteIP in (/* susp IP list placeholder */)
+| join kind=leftouter (mispLookup | where IndicatorType == "Domain" or IndicatorType == "Url") on domain == IndicatorName
+| extend misp_c2_score = coalesce(misp_score,0)
+| extend total_score = 1.5 * toint(dg_pattern) + misp_c2_score
+| where total_score >= 3
+| summarize hits = count(), devices = make_set(DeviceName), domains = make_set(domain), first_seen=min(TimeGenerated), last_seen=max(TimeGenerated) by RemoteIP
+| project RemoteIP, hits, devices, domains, first_seen, last_seen, total_score
