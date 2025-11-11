@@ -2,37 +2,67 @@
 // MITRE: Supply Chain Compromise mapping (T1195, T1566 where relevant), Persistence / Defense Evasion where model artifacts executed
 // Tables: DeviceFileEvents, DeviceNetworkEvents, ThreatIntelligenceIndicator, AzureActivity (for cloud training jobs), CommonSecurityLog
 
-// Enhanced version with production improvements
-let mispLookup = materialize(ThreatIntelligenceIndicator 
-    | where TimeGenerated >= ago(180d) 
-    | extend Tags=tostring(Tags) 
+// AI Model Poisoning Detection - Production Ready
+// MITRE: T1195.003, T1554, T1565.001
+let mispLookup = materialize(
+    ThreatIntelligenceIndicator
+    | where TimeGenerated >= ago(180d)
+    | extend Tags = tostring(Tags)
+    | where Tags has_cs "supply-chain:ai-models"
     | extend misp_score = 1.0
-    | where Tags has_cs "supply-chain:ai-models");
+);
 
 DeviceFileEvents
-| where TimeGenerated >= ago(2d) // Shorter window for production
-| where FolderPath has_any ("\\models\\","/models/","\\ml\\","/training/","/artifacts/","\\model_registry\\","/checkpoints/") 
-    or FileName has_any (".pt",".pth",".h5",".pkl",".onnx",".tflite",".safetensors")
-| where ActionType in ("FileCreated","FileModified","FileMoved")
-// Enhanced heuristics
+| where TimeGenerated >= ago(2d)
+| where FolderPath has_any (
+    "\\models\\", "/models/", "\\ml\\", "/training/", 
+    "/artifacts/", "\\model_registry\\", "/checkpoints/",
+    "\\weights\\", "/weights/"
+) 
+or FileName has_any (
+    ".pt", ".pth", ".h5", ".pkl", ".onnx", ".tflite", 
+    ".safetensors", ".ckpt", ".joblib", ".pb"
+)
+| where ActionType in ("FileCreated", "FileModified", "FileMoved")
+// Fixed heuristics - removed problematic conditions
 | extend suspicious_change = case(
     FileName endswith_cs ".pt" and FileSize > 1000, 1,
-    FileName endswith_cs ".pth" and FileSize between(500 .. 5000), 1, 
-    0)
+    FileName endswith_cs ".pth" and FileSize > 500, 1,
+    0
+)
 | extend suspect_replace = case(
-    FileName in ("model_latest.pt","production_model.pth","best.ckpt") 
-    and InitiatingProcessFileName !in~ ("trusted_updater.exe","pip.exe","conda.exe","python.exe","wandb.exe","mlflow.exe"), 1,
-    0)
+    FileName in~ ("model_latest.pt", "production_model.pth", "best.ckpt", "final_model.pth") 
+    and InitiatingProcessFileName !in~ (
+        "trusted_updater.exe", "pip.exe", "conda.exe", "python.exe", 
+        "wandb.exe", "mlflow.exe", "kubectl.exe", "docker.exe", "git.exe"
+    ), 1,
+    0
+)
 | extend is_large_model = FileSize > 200000000 // 200MB
-| extend unusual_time = iff(hourofday(TimeGenerated) between(22 .. 6) or hourofday(TimeGenerated) between(0 .. 4), 1, 0)
+| extend unusual_time = iff(hourofday(TimeGenerated) between(22 .. 23) or hourofday(TimeGenerated) between(0 .. 4), 1, 0)
 | where suspicious_change == 1 or suspect_replace == 1 or is_large_model
 | join kind=leftouter mispLookup on $left.SHA1 == $right.IndicatorName
-| extend misp_model_score = coalesce(misp_score, 0)
-| extend total_score = (1.0 * toreal(suspect_replace)) + 
-                      (0.5 * toreal(is_large_model)) + 
-                      (0.3 * toreal(unusual_time)) +
-                      misp_model_score
+| extend misp_model_score = coalesce(misp_score, 0.0)
+| extend total_score = (
+    1.0 * toreal(suspect_replace) + 
+    0.5 * toreal(is_large_model) + 
+    0.3 * toreal(unusual_time) +
+    misp_model_score
+)
 | where total_score >= 1.5
-| project TimeGenerated, DeviceName, FileName, FolderPath, FileSize, 
-          SHA1, InitiatingProcessFileName, InitiatingProcessCommandLine, 
-          total_score, misp_model_score, suspicious_change, suspect_replace, is_large_model
+| project 
+    TimeGenerated,
+    DeviceName,
+    FileName,
+    FolderPath,
+    FileSize,
+    SHA1,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    total_score,
+    misp_model_score,
+    suspicious_change,
+    suspect_replace,
+    is_large_model,
+    unusual_time
+| order by total_score desc
