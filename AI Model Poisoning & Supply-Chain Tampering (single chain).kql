@@ -1,13 +1,7 @@
-// AI Model Poisoning Detection — L3
+// AI Model Poisoning Detection — L3 - Production Ready
 // MITRE: Supply Chain Compromise mapping (T1195, T1566 where relevant), Persistence / Defense Evasion where model artifacts executed
 // Tables: DeviceFileEvents, DeviceNetworkEvents, ThreatIntelligenceIndicator, AzureActivity (for cloud training jobs), CommonSecurityLog
-
-// AI Model Poisoning Detection - Production Ready
 // MITRE: T1195.003, T1554, T1565.001
-// =============================================================================
-// AI MODEL POISONING DETECTION & SUPPLY CHAIN COMPROMISE
-// =============================================================================
-// THREAT DESCRIPTION: 
 // AI Model Poisoning occurs when attackers manipulate training data or model files
 // to introduce backdoors, bias, or malicious behavior. This can happen through:
 // 1. Data poisoning - Injecting malicious samples during training
@@ -24,9 +18,8 @@
 // DETECTION APPROACH:
 // Monitors file system events in ML directories for suspicious model modifications,
 // unauthorized processes, off-hours activity, and threat intelligence matches.
-// =============================================================================
+
 // SECTION 1: THREAT INTELLIGENCE PREPARATION
-// =============================================================================
 let mispLookup = materialize(
     ThreatIntelligenceIndicator
     | where TimeGenerated >= ago(180d)
@@ -34,9 +27,8 @@ let mispLookup = materialize(
     | where Tags has_cs "supply-chain:ai-models"
     | extend misp_score = 1.0
 );
-// =============================================================================
+
 // SECTION 2: FILE EVENT COLLECTION & FILTERING
-// =============================================================================
 DeviceFileEvents
 | where TimeGenerated >= ago(2d)
 | where FolderPath has_any (
@@ -49,9 +41,7 @@ or FileName has_any (
     ".safetensors", ".ckpt", ".joblib", ".pb"
 )
 | where ActionType in ("FileCreated", "FileModified", "FileMoved")
-// =============================================================================
 // SECTION 3: DETECTION HEURISTICS & SCORING
-// =============================================================================
 | extend suspicious_change = case(
     FileName endswith_cs ".pt" and FileSize > 1000, 1,
     FileName endswith_cs ".pth" and FileSize > 500, 1,
@@ -70,20 +60,16 @@ or FileName has_any (
 | extend is_large_model = FileSize > 200000000
 | extend unusual_time = iff(hourofday(TimeGenerated) between(22 .. 23) or hourofday(TimeGenerated) between(0 .. 4), 1, 0)
 | where suspicious_change == 1 or suspect_replace == 1 or is_large_model
-// =============================================================================
+
 // SECTION 4: THREAT INTELLIGENCE CORRELATION
-// =============================================================================
+
 | join kind=leftouter mispLookup on $left.SHA1 == $right.IndicatorName
 | extend misp_model_score = coalesce(misp_score, 0.0)
-// =============================================================================
 // SECTION 5: COMPOSITE SCORING & ALERT PRIORITIZATION
-// =============================================================================
 | extend total_score = (1.0 * toreal(suspect_replace)) + (0.5 * toreal(is_large_model)) + (0.3 * toreal(unusual_time)) + misp_model_score
 | where total_score >= 1.5
 
-// =============================================================================
 // SECTION 6: SEVERITY CLASSIFICATION & HUNTER DIRECTIVES
-// =============================================================================
 | extend severity = case(
     total_score >= 3.0, "High",
     total_score >= 2.0, "Medium", 
@@ -97,8 +83,6 @@ or FileName has_any (
     "LOW: Investigate model change - Review modification context and verify with data science team. Document findings for future reference."
 )
 
-// =============================================================================
 // SECTION 7: RESULTS FORMATTING & OUTPUT
-// =============================================================================
 | project TimeGenerated, DeviceName, FileName, FolderPath, FileSize, SHA1, InitiatingProcessFileName, InitiatingProcessCommandLine, total_score, severity, misp_model_score, ThreatHunterDirective
 | order by total_score desc
