@@ -4,6 +4,29 @@
 
 // AI Model Poisoning Detection - Production Ready
 // MITRE: T1195.003, T1554, T1565.001
+// =============================================================================
+// AI MODEL POISONING DETECTION & SUPPLY CHAIN COMPROMISE
+// =============================================================================
+// THREAT DESCRIPTION: 
+// AI Model Poisoning occurs when attackers manipulate training data or model files
+// to introduce backdoors, bias, or malicious behavior. This can happen through:
+// 1. Data poisoning - Injecting malicious samples during training
+// 2. Model replacement - Swapping legitimate models with compromised versions
+// 3. Weight manipulation - Directly modifying model parameters
+// 4. Supply chain attacks - Compromising model repositories or dependencies
+//
+// ATTACK IMPACT:
+// - Backdoored models making incorrect predictions for specific inputs
+// - Data exfiltration through model outputs
+// - Business logic manipulation in AI-driven decisions
+// - Reputation damage and regulatory violations
+//
+// DETECTION APPROACH:
+// Monitors file system events in ML directories for suspicious model modifications,
+// unauthorized processes, off-hours activity, and threat intelligence matches.
+// =============================================================================
+// SECTION 1: THREAT INTELLIGENCE PREPARATION
+// =============================================================================
 let mispLookup = materialize(
     ThreatIntelligenceIndicator
     | where TimeGenerated >= ago(180d)
@@ -11,7 +34,9 @@ let mispLookup = materialize(
     | where Tags has_cs "supply-chain:ai-models"
     | extend misp_score = 1.0
 );
-
+// =============================================================================
+// SECTION 2: FILE EVENT COLLECTION & FILTERING
+// =============================================================================
 DeviceFileEvents
 | where TimeGenerated >= ago(2d)
 | where FolderPath has_any (
@@ -24,45 +49,56 @@ or FileName has_any (
     ".safetensors", ".ckpt", ".joblib", ".pb"
 )
 | where ActionType in ("FileCreated", "FileModified", "FileMoved")
-// Fixed heuristics - removed problematic conditions
+// =============================================================================
+// SECTION 3: DETECTION HEURISTICS & SCORING
+// =============================================================================
 | extend suspicious_change = case(
     FileName endswith_cs ".pt" and FileSize > 1000, 1,
     FileName endswith_cs ".pth" and FileSize > 500, 1,
     0
 )
+// COMPLETE suspect_replace LOGIC - CRITICAL DETECTION HEURISTIC
 | extend suspect_replace = case(
     FileName in~ ("model_latest.pt", "production_model.pth", "best.ckpt", "final_model.pth") 
     and InitiatingProcessFileName !in~ (
         "trusted_updater.exe", "pip.exe", "conda.exe", "python.exe", 
         "wandb.exe", "mlflow.exe", "kubectl.exe", "docker.exe", "git.exe"
-    ), 1,
+    ), 1,  // This was missing - now complete
     0
 )
-| extend is_large_model = FileSize > 200000000 // 200MB
+
+| extend is_large_model = FileSize > 200000000
 | extend unusual_time = iff(hourofday(TimeGenerated) between(22 .. 23) or hourofday(TimeGenerated) between(0 .. 4), 1, 0)
 | where suspicious_change == 1 or suspect_replace == 1 or is_large_model
+// =============================================================================
+// SECTION 4: THREAT INTELLIGENCE CORRELATION
+// =============================================================================
 | join kind=leftouter mispLookup on $left.SHA1 == $right.IndicatorName
 | extend misp_model_score = coalesce(misp_score, 0.0)
-| extend total_score = (
-    1.0 * toreal(suspect_replace) + 
-    0.5 * toreal(is_large_model) + 
-    0.3 * toreal(unusual_time) +
-    misp_model_score
-)
+// =============================================================================
+// SECTION 5: COMPOSITE SCORING & ALERT PRIORITIZATION
+// =============================================================================
+| extend total_score = (1.0 * toreal(suspect_replace)) + (0.5 * toreal(is_large_model)) + (0.3 * toreal(unusual_time)) + misp_model_score
 | where total_score >= 1.5
-| project 
-    TimeGenerated,
-    DeviceName,
-    FileName,
-    FolderPath,
-    FileSize,
-    SHA1,
-    InitiatingProcessFileName,
-    InitiatingProcessCommandLine,
-    total_score,
-    misp_model_score,
-    suspicious_change,
-    suspect_replace,
-    is_large_model,
-    unusual_time
+
+// =============================================================================
+// SECTION 6: SEVERITY CLASSIFICATION & HUNTER DIRECTIVES
+// =============================================================================
+| extend severity = case(
+    total_score >= 3.0, "High",
+    total_score >= 2.0, "Medium", 
+    "Low"
+)
+| extend ThreatHunterDirective = case(
+    total_score >= 3.0 and suspect_replace == 1, "CRITICAL: Immediate model quarantine required - Production model modified by untrusted process. Isolate host, block model deployment, investigate process origin and check model registry integrity. [MITRE: T1195.003, T1554]",
+    total_score >= 2.5 and misp_model_score == 1.0, "HIGH: Known malicious model detected - File hash matches threat intelligence. Quarantine model, scan all model repositories for same hash, investigate download source and check for lateral movement. [MITRE: T1195.003]",
+    total_score >= 2.0 and is_large_model == 1, "MEDIUM: Suspicious large model activity - Investigate model source and purpose. Verify training pipeline integrity, check for unauthorized external model imports and validate model checksums. [MITRE: T1565.001]",
+    total_score >= 1.5 and unusual_time == 1, "MEDIUM: Off-hours model modification - Review change control procedures. Verify authorized maintenance, check user account permissions and monitor for additional suspicious activity. [MITRE: T1565.001]",
+    "LOW: Investigate model change - Review modification context and verify with data science team. Document findings for future reference."
+)
+
+// =============================================================================
+// SECTION 7: RESULTS FORMATTING & OUTPUT
+// =============================================================================
+| project TimeGenerated, DeviceName, FileName, FolderPath, FileSize, SHA1, InitiatingProcessFileName, InitiatingProcessCommandLine, total_score, severity, misp_model_score, ThreatHunterDirective
 | order by total_score desc
