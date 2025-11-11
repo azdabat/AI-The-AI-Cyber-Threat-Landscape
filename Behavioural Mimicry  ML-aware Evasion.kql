@@ -1,16 +1,61 @@
-// Behavioral Mimicry Detection
-// Tables: DeviceProcessEvents, DeviceImageLoadEvents, DeviceRegistryEvents, DeviceLogonEvents, ThreatIntelligenceIndicator
-let mispLookup = materialize(ThreatIntelligenceIndicator | where TimeGenerated >= ago(90d) | extend Tags=tostring(Tags) | extend misp_score=1.0);
+// ==========================================================
+//  Behavioral Mimicry Detection — Production Ready
+//  Author: Ala Dabat (©2025)
+//  MITRE: T1059, T1086, T1021
+//  CPU Usage: Moderate (serialize + join on TI)
+//  Optimisation: Run on scheduled hunts; pre-filter ProcessEvents early.
+// ==========================================================
 
+let lookback = 48h;
+let ti_window = 90d;
+
+// ---- Static indicator sets ----
+let suspect_bins = dynamic(["powershell.exe","pwsh.exe","cmd.exe","wmic.exe","rundll32.exe","cscript.exe"]);
+let admin_tokens = dynamic(["get-aduser","get-mailbox","get-childitem","get-process","net user","net group","sc query","sc create","schtasks /create","invoke-command","winrm","get-service","get-eventlog"]);
+let automation_accounts = dynamic(["svc-automation","svc-monitor","svc-patch","jenkins","ansible","salt","orchestrator"]);
+
+// ---- MISP / TI lookup ----
+let mispLookup = materialize(
+    ThreatIntelligenceIndicator
+    | where TimeGenerated >= ago(ti_window)
+    | where IndicatorType == "CommandLine"
+    | project IndicatorName = tolower(IndicatorName), misp_score = 1.0, TI_tags = tostring(Tags)
+);
+
+// ---- Core process detection ----
 DeviceProcessEvents
-| where TimeGenerated >= ago(48h)
-| where FileName in~ ("powershell.exe","pwsh.exe","cmd.exe","wmic.exe","rundll32.exe","cscript.exe")
-| extend cmd = ProcessCommandLine
-| extend admin_like = iff(cmd has_any("Get-ADUser","Get-Mailbox","Get-ChildItem","Get-Process","net user","net group","sc query","sc create","schtasks /create"),1,0)
-| extend timing_precision = iff(datediff("millisecond",TimeGenerated,prev(TimeGenerated)) between (0 .. 5000),1,0) // look for millisecond-precise sequences across processes
-| where admin_like == 1 and (timing_precision == 1 or InitiatingProcessFileName !in~ ("explorer.exe","services.exe"))
-| join kind=leftouter (DeviceImageLoadEvents) on $left.InitiatingProcessFileName == $right.ImageFileName
-| extend misp_mimic = coalesce(mispLookup | where IndicatorType == "CommandLine" and IndicatorName == cmd | project misp_score, 0)
-| extend total_score = 1*admin_like + 1*timing_precision + coalesce(misp_mimic,0)
-| where total_score >= 2
-| project TimeGenerated, DeviceName, FileName, ProcessCommandLine, InitiatingProcessFileName, total_score
+| where TimeGenerated >= ago(lookback)
+| where FileName in~ (suspect_bins)
+| extend cmd = tolower(tostring(ProcessCommandLine))
+| where cmd has_any (admin_tokens)
+| where not(AccountName has_any (automation_accounts))
+| extend Parent = tostring(InitiatingProcessFileName), Account = tostring(AccountName)
+| serialize by DeviceName asc, TimeGenerated asc
+| extend prev_time = prev(TimeGenerated), prev_device = prev(DeviceName)
+| extend delta_ms = totimespan(TimeGenerated - prev_time)
+| extend rapid_sequence = iff(delta_ms <= 5s and prev_device == DeviceName, 1, 0)
+| extend uncommon_parent = iff(Parent !in~ ("explorer.exe","services.exe","taskeng.exe","svchost.exe","mmc.exe"), 1, 0)
+| join kind=leftouter (mispLookup) on $left.cmd == $right.IndicatorName
+| extend misp_score = coalesce(misp_score, 0), TI_tags = coalesce(TI_tags, "")
+| extend score_admin = 2 * (cmd has_any(admin_tokens))
+| extend score_timing = 2 * rapid_sequence
+| extend score_parent = 1 * uncommon_parent
+| extend score_ti = 3 * misp_score
+| extend total_score = score_admin + score_timing + score_parent + score_ti
+| where total_score >= 4
+
+// ---- Hunter Directives (action layer) ----
+| extend HunterDirective =
+    case(
+        misp_score > 0, "TI match found — pivot immediately into network telemetry & check related IOC enrichment.",
+        rapid_sequence == 1, "Rapid script chain — possible automation or mimicry. Review process tree and parent correlation.",
+        uncommon_parent == 1, "Unusual parent process — inspect parent lineage for LOLBin or process injection.",
+        total_score >= 6, "High-confidence mimicry — isolate host, preserve memory & collect triage artifacts.",
+        "Low urgency — monitor in next 24h window for pattern repetition."
+    )
+
+// ---- Output summary ----
+| project TimeGenerated, DeviceName, Account, FileName, Parent,
+          ProcessCommandLine, delta_ms, rapid_sequence,
+          misp_score, TI_tags, total_score, HunterDirective
+| order by total_score desc, TimeGenerated desc
