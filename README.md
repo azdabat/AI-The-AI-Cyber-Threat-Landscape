@@ -1,9 +1,9 @@
-# 🧠 AI-Powered Cyber Threats: The 2025 Global Guide  
+#  AI-Powered Cyber Threats: The 2025 Global Guide  
 ### *Understanding and Responding to the Next Generation of Machine-Driven Attacks*
 
 ---
 
-## 📑 Table of Contents
+##  Table of Contents
 1. [Overview](#1-the-2025-ai-cyber-threat-landscape)
 2. [Anatomy of an AI Attack Chain](#2-anatomy-of-an-ai-attack-chain)
 3. [AI Attack Chain Matrix](#3-ai-attack-chain-matrix)
@@ -21,14 +21,14 @@
 
 ---
 
-## 1️⃣ The 2025 AI Cyber Threat Landscape
+## 1️ The 2025 AI Cyber Threat Landscape
 
 Artificial Intelligence has evolved from a defensive tool to an offensive weapon.  
 Attackers now deploy **adaptive, self-learning systems** capable of rewriting their own tactics in real time.
 
 These threats affect every sector — from **finance and logistics** to **defense, telecom, and AI research**.
 
-### ⚠️ Most Dangerous AI-Powered Attack Vectors
+### Most Dangerous AI-Powered Attack Vectors
 
 | Category | Description | Real-World Impact |
 |-----------|--------------|------------------|
@@ -40,7 +40,7 @@ These threats affect every sector — from **finance and logistics** to **defens
 
 ---
 
-## 2️⃣ Anatomy of an AI Attack Chain
+## 2️ Anatomy of an AI Attack Chain
 
 AI attacks **self-adapt** across each intrusion stage:
 
@@ -53,7 +53,7 @@ The challenge for defenders is correlation: each stage alone may look legitimate
 
 ---
 
-## 3️⃣ AI Attack Chain Matrix
+## 3️ AI Attack Chain Matrix
 
 | Attack Stage | Technique | Primary Data Sources | Detection Concept | Example MISP Tags | Weight |
 |---------------|------------|----------------------|--------------------|-------------------|--------|
@@ -67,13 +67,13 @@ The challenge for defenders is correlation: each stage alone may look legitimate
 
 ---
 
-## 4️⃣ The Rise of AI Supply-Chain Attacks
+## 4️ The Rise of AI Supply-Chain Attacks
 
-### 🧩 AI Model Poisoning
+### AI Model Poisoning
 Attackers modify machine learning models by introducing malicious weights or logic inside `.pt`, `.pkl`, `.onnx`, or `.h5` files.  
 This allows hidden backdoors or incorrect outputs once deployed in production.
 
-### 🗄️ Training Data Exfiltration
+### Training Data Exfiltration
 Compromised endpoints exfiltrate training data or proprietary datasets to cloud buckets.  
 The stolen data can be reused for adversarial model training or to reconstruct internal algorithms.
 
@@ -84,7 +84,7 @@ The stolen data can be reused for adversarial model training or to reconstruct i
 
 ---
 
-## 5️⃣ Hunter Directives: How Analysts Approach AI Attacks
+## 5️ Hunter Directives: How Analysts Approach AI Attacks
 
 | Directive | Focus | Why It Matters |
 |------------|--------|----------------|
@@ -96,7 +96,7 @@ The stolen data can be reused for adversarial model training or to reconstruct i
 
 ---
 
-## 6️⃣ Kill-Chain & Response Workflow
+## 6️ Kill-Chain & Response Workflow
 
 | Kill-Chain Stage | Analyst Focus | Investigation Tasks | MITRE Techniques |
 |------------------|----------------|--------------------|-----------------|
@@ -110,9 +110,9 @@ The stolen data can be reused for adversarial model training or to reconstruct i
 
 ---
 
-## 7️⃣ Lateral Movement & Persistence Indicators
+## 7️ Lateral Movement & Persistence Indicators
 
-### 🔄 Lateral Movement
+###  Lateral Movement
 
 | Indicator | Description | Typical Source |
 |------------|--------------|----------------|
@@ -121,7 +121,7 @@ The stolen data can be reused for adversarial model training or to reconstruct i
 | Non-standard ports | 445, 5985, 3389 by non-admins | Network telemetry |
 | Shared service accounts | Reused credentials from multiple IPs | AAD Sign-In, SecurityEvent |
 
-### 📦 Persistence Hotlist
+###  Persistence Hotlist
 
 | Registry Key | Value Name | Executable Path | Risk |
 |---------------|-------------|-----------------|------|
@@ -131,7 +131,7 @@ The stolen data can be reused for adversarial model training or to reconstruct i
 
 ---
 
-## 8️⃣ Post-Incident and Threat Intelligence Integration
+## 8️ Post-Incident and Threat Intelligence Integration
 
 ### 🔗 MISP Integration Workflow
 1. Extract file hashes, domains, IPs, and registry keys.  
@@ -141,7 +141,7 @@ The stolen data can be reused for adversarial model training or to reconstruct i
    - `supply-chain:ai-models` or `defense-evasion:mimicry`  
 3. Feed enriched data into OpenCTI for correlation and visualization.
 
-### ⚖️ Confidence Scoring Breakdown
+###  Confidence Scoring Breakdown
 
 | Tag Type | Example | Weight | Purpose |
 |-----------|----------|--------|----------|
@@ -151,7 +151,7 @@ The stolen data can be reused for adversarial model training or to reconstruct i
 
 ---
 
-## 9️⃣ Automation and Playbook Triggers
+## 9️ Automation and Playbook Triggers
 
 | Condition | Automated Action | Reason |
 |------------|------------------|--------|
@@ -162,7 +162,7 @@ The stolen data can be reused for adversarial model training or to reconstruct i
 
 ---
 
-## 🔟 Analyst Workflow Summary
+## 10 Analyst Workflow Summary
 
 1. **Triage** alerts enriched by MISP scoring.  
 2. **Investigate** the full chain — from phishing to persistence.  
@@ -173,7 +173,7 @@ The stolen data can be reused for adversarial model training or to reconstruct i
 
 ---
 
-## 11️⃣ Why These Attacks Matter
+## 11️ Why These Attacks Matter
 
 By 2025, AI adversaries are no longer theoretical — they are autonomous learners.  
 They adapt, observe, and rewrite their methods faster than human defenders can respond.  
@@ -183,7 +183,7 @@ Detection alone isn’t enough — intelligence integration and adaptive automat
 
 ---
 
-## 12️⃣ Final Reference Tables
+## 1 2️ Final Reference Tables
 
 ### Kill-Chain vs Response
 
@@ -208,7 +208,7 @@ Detection alone isn’t enough — intelligence integration and adaptive automat
 
 ---
 
-## 13️⃣ Sample KQL Detection Rules
+## 13️ Sample KQL Detection Rules
 
 Below are example **Sentinel / MDE KQL detections**, organized by stage.  
 Click each section to expand.
